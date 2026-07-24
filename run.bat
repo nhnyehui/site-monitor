@@ -12,7 +12,7 @@ echo [5/6] Publishing web report + upload to GitHub...
 node publish.js
 git add -A
 git commit -m "report %DATE%" 1>nul 2>nul
-git push 1>nul 2>nul && echo   (GitHub 업로드 완료) || echo   (GitHub 업로드 건너뜀 - web-setup.bat 먼저 실행 필요)
+git push || echo   (GitHub 업로드 실패 - web-fix.bat 실행 필요)
 echo [6/6] Sending to Dooray...
 node notify.js
 start "" "%~dp0reports\index.html"
