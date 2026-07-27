@@ -77,13 +77,15 @@ async function captureSite(browser, site, dir) {
       if (await isBlocked(page)) throw new Error('보안(봇 차단) 페이지에 막힘');
     }
 
-    // 지연 로딩 대비 끝까지 스크롤 후 맨 위로
+    // 상단 히어로가 나타날 초기 시간
+    await page.waitForTimeout(1500);
+    // 천천히 끝까지 스크롤(각 구역의 나타나는 요소를 트리거) 후 맨 위로
     await page.evaluate(async () => {
-      await new Promise(resolve => { let t = 0; const timer = setInterval(() => { window.scrollBy(0, 1200); t += 1200; if (t >= document.body.scrollHeight) { clearInterval(timer); resolve(); } }, 60); });
+      await new Promise(resolve => { let t = 0; const timer = setInterval(() => { window.scrollBy(0, 400); t += 400; if (t >= document.body.scrollHeight + 800) { clearInterval(timer); resolve(); } }, 200); });
     });
     await page.evaluate(() => window.scrollTo(0, 0));
-    // fade-in 텍스트/지연 로딩이 다 나타날 때까지 대기 (애니메이션은 건드리지 않음 → 텍스트 유지)
-    await page.waitForTimeout(2500);
+    // fade-in 텍스트/지연 로딩이 다 나타날 때까지 대기 (애니메이션은 건드리지 않음)
+    await page.waitForTimeout(3000);
 
     // 무시영역만 숨김 (애니메이션 정지는 fade-in 텍스트를 사라지게 해서 넣지 않음)
     if (site.ignoreSelector) await page.addStyleTag({ content: `${site.ignoreSelector}{visibility:hidden !important;}` });

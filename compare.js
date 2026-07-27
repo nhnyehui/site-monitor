@@ -27,13 +27,49 @@ function padTo(img, w, h) {
   PNG.bitblt(img, out, 0, 0, img.width, img.height, 0, 0);
   return out;
 }
+// 세로 밀림(전일/금일 몇 픽셀 어긋남)을 보정: 여러 오프셋 중 가장 잘 맞는 위치로 비교
+const ALIGN_OFFSETS = [-8, -6, -4, -2, 0, 2, 4, 6, 8];
+// b를 dy만큼 세로 이동한 이미지 생성(범위 밖은 a와 동일하게 채워 오차 0 처리)
+function shiftBy(aData, bImg, w, h, dy) {
+  const out = Buffer.alloc(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const sy = y - dy;
+    for (let x = 0; x < w; x++) {
+      const di = (y * w + x) * 4;
+      if (sy >= 0 && sy < h) {
+        const si = (sy * w + x) * 4;
+        out[di] = bImg.data[si]; out[di + 1] = bImg.data[si + 1]; out[di + 2] = bImg.data[si + 2]; out[di + 3] = bImg.data[si + 3];
+      } else {
+        out[di] = aData[di]; out[di + 1] = aData[di + 1]; out[di + 2] = aData[di + 2]; out[di + 3] = aData[di + 3];
+      }
+    }
+  }
+  return out;
+}
+// 빠른 차이 픽셀 수(오프셋 탐색용, 안티앨리어싱 무시)
+function fastCount(aData, bData, w, h, tol) {
+  let c = 0;
+  for (let i = 0; i < w * h; i++) {
+    const j = i * 4;
+    if (Math.abs(aData[j] - bData[j]) + Math.abs(aData[j + 1] - bData[j + 1]) + Math.abs(aData[j + 2] - bData[j + 2]) > tol) c++;
+  }
+  return c;
+}
 function compareImages(prevPath, todayPath, diffPath) {
   let a = PNG.sync.read(fs.readFileSync(prevPath));
   let b = PNG.sync.read(fs.readFileSync(todayPath));
   const w = Math.max(a.width, b.width), h = Math.max(a.height, b.height);
   a = padTo(a, w, h); b = padTo(b, w, h);
+  // 가장 잘 맞는 세로 오프셋 찾기 (밀림 보정)
+  let bestDy = 0, bestCount = Infinity;
+  for (const dy of ALIGN_OFFSETS) {
+    const shifted = shiftBy(a.data, b, w, h, dy);
+    const c = fastCount(a.data, shifted, w, h, 90);
+    if (c < bestCount) { bestCount = c; bestDy = dy; }
+  }
+  const bAligned = shiftBy(a.data, b, w, h, bestDy);
   const diff = new PNG({ width: w, height: h });
-  const n = pixelmatch(a.data, b.data, diff.data, w, h, { threshold: PIXEL_SENSITIVITY });
+  const n = pixelmatch(a.data, bAligned, diff.data, w, h, { threshold: PIXEL_SENSITIVITY });
   fs.mkdirSync(path.dirname(diffPath), { recursive: true });
   fs.writeFileSync(diffPath, PNG.sync.write(diff));
   return Math.round((n / (w * h)) * 100 * 100) / 100;
