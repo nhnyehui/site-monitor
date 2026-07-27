@@ -77,6 +77,12 @@ async function captureSite(browser, site, dir) {
       if (await isBlocked(page)) throw new Error('보안(봇 차단) 페이지에 막힘');
     }
 
+    // 롤링 배너 자동재생 정지 → 1번 슬라이드 고정 (접속 직후 바로)
+    try {
+      const pauseBtns = await page.$$('[class*="btn-pause"], .slick-autoplay-toggle-button');
+      for (const b of pauseBtns) { try { await b.click({ timeout: 1500 }); } catch {} }
+    } catch {}
+
     // 상단 히어로가 나타날 초기 시간
     await page.waitForTimeout(1500);
     // 천천히 끝까지 스크롤(각 구역의 나타나는 요소를 트리거) 후 맨 위로
@@ -100,7 +106,25 @@ async function captureSite(browser, site, dir) {
         }
       }
     });
-    await page.waitForTimeout(600);
+
+    // 백업: 혹시 슬라이드가 넘어갔으면 실제 클릭으로 1번까지 되돌림
+    try {
+      for (let i = 0; i < 12; i++) {
+        const idx = await page.evaluate(() => {
+          const sl = document.querySelector('.slick-slider'); if (!sl) return -1;
+          const list = sl.querySelector('.slick-list'); if (!list) return -1;
+          const lr = list.getBoundingClientRect();
+          const reals = [...sl.querySelectorAll('.slick-slide:not(.slick-cloned)')];
+          return reals.findIndex(s => { const r = s.getBoundingClientRect(); const cx = r.left + r.width / 2; return cx > lr.left + 5 && cx < lr.right - 5; });
+        });
+        if (idx <= 0) break;
+        const prev = await page.$('.btn-move.btn-prev, .slick-slider .btn-prev, [class*="key-visual"] [class*="prev"]');
+        if (!prev) break;
+        await prev.click({ timeout: 1500 }).catch(() => {});
+        await page.waitForTimeout(400);
+      }
+    } catch {}
+    await page.waitForTimeout(500);
 
     const fp = path.join(dir, `${site.id}_full.png`);
     await page.screenshot({ path: fp, fullPage: true });
