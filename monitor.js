@@ -1,19 +1,26 @@
 // ============================================================
-// monitor.js — 1단계: 사이트당 스크린샷 1장 저장 (빠른 단순 버전)
-// - 스텔스 없음(일반 IP에서 불필요, 모바일 에뮬레이션 방해했음)
-// - 모바일(Y): 안드로이드 Pixel 7 프로필 + 새로고침 1회 → 실제 모바일 화면
-// - 하단 고정배너(fixed/sticky)는 캡쳐 직전 일반 흐름으로 바꿔 본문을 안 가리고 맨 아래에 찍힘
+// monitor.js — 1단계: 스크린샷 + "스스로 움직이는 영역(모션마스크)" 저장
+// - 같은 날 몇 초 간격으로 여러 장을 찍어, 그 사이 변하는 픽셀 = 롤링배너 등 움직이는 영역.
+//   그 영역은 비교에서 자동 제외(셀렉터 불필요).
+// - 스텔스 없음 / 모바일(Y): 아이폰 Pixel + 새로고침 / 하단 고정배너는 맨 아래로
 // urls.csv 열: 사이트명,URL,중요도,확인영역,무시영역,다음버튼,탭버튼,모바일
 // ============================================================
 const { chromium, devices } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const { PNG } = require('pngjs');
 
 const SCREENSHOT_DIR = 'screenshots';
 const KEEP_DAYS = 14;
 const VIEWPORT = { width: 1440, height: 900 };
-const MOBILE = devices['Pixel 7'];   // 안드로이드 크롬 모바일 프로필
+const MOBILE = devices['Pixel 7'];
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+// 모션마스크 설정
+const MASK_PROBES = 3;         // 같은 날 촬영 횟수
+const MASK_GAP_MS = 2200;      // 촬영 간격 (롤링 1회전 정도 포착)
+const MASK_TOL = 40;           // 픽셀 색 차이 허용치(이보다 크면 "움직임")
+const MASK_DILATE = 3;         // 움직임 영역 약간 확장(글자 테두리까지)
 
 function todayKST() { return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); }
 
@@ -46,6 +53,29 @@ function loadSites() {
     }));
 }
 
+// ─── 모션마스크 도우미 ───
+function padTo(img, w, h) { if (img.width === w && img.height === h) return img; const o = new PNG({ width: w, height: h }); PNG.bitblt(img, o, 0, 0, img.width, img.height, 0, 0); return o; }
+function dilate(m, w, h, r) {
+  const t = Buffer.alloc(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let on = 0; for (let d = -r; d <= r; d++) { const xx = x + d; if (xx >= 0 && xx < w && m[y * w + xx]) { on = 1; break; } } t[y * w + x] = on; }
+  const o = Buffer.alloc(w * h);
+  for (let x = 0; x < w; x++) for (let y = 0; y < h; y++) { let on = 0; for (let d = -r; d <= r; d++) { const yy = y + d; if (yy >= 0 && yy < h && t[yy * w + x]) { on = 1; break; } } o[y * w + x] = on; }
+  return o;
+}
+// 여러 컷에서 첫 컷과 달라지는 픽셀 = 움직임 → 흰색 마스크 PNG 버퍼
+function buildMotionMask(probeBufs) {
+  const imgs = probeBufs.map(b => PNG.sync.read(b));
+  const w = Math.max(...imgs.map(i => i.width)), h = Math.max(...imgs.map(i => i.height));
+  const P = imgs.map(i => padTo(i, w, h));
+  let m = Buffer.alloc(w * h);
+  const a = P[0];
+  for (let k = 1; k < P.length; k++) { const b = P[k]; for (let p = 0; p < w * h; p++) { const i = p * 4; if (Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]) > MASK_TOL) m[p] = 1; } }
+  m = dilate(m, w, h, MASK_DILATE);
+  const out = new PNG({ width: w, height: h });
+  for (let p = 0; p < w * h; p++) { const i = p * 4; const v = m[p] ? 255 : 0; out.data[i] = v; out.data[i + 1] = v; out.data[i + 2] = v; out.data[i + 3] = 255; }
+  return PNG.sync.write(out);
+}
+
 async function isBlocked(page) {
   try {
     const title = await page.title();
@@ -60,12 +90,11 @@ async function captureSite(browser, site, dir) {
     : { viewport: VIEWPORT, userAgent: USER_AGENT, locale: 'ko-KR', timezoneId: 'Asia/Seoul' }
   );
   const page = await context.newPage();
-  const result = { id: site.id, name: site.name, url: site.url, importance: site.importance, mobile: site.mobile, full: null, region: null, error: null };
+  const result = { id: site.id, name: site.name, url: site.url, importance: site.importance, mobile: site.mobile, full: null, region: null, motion: null, error: null };
   try {
     try { await page.goto(site.url, { waitUntil: 'networkidle', timeout: 40000 }); }
     catch { await page.goto(site.url, { waitUntil: 'load', timeout: 40000 }); }
 
-    // 모바일: 새로고침 1회 → 실제 모바일 레이아웃으로 다시 렌더링
     if (site.mobile) {
       try { await page.reload({ waitUntil: 'networkidle', timeout: 40000 }); }
       catch { await page.reload({ waitUntil: 'load', timeout: 40000 }); }
@@ -77,58 +106,39 @@ async function captureSite(browser, site, dir) {
       if (await isBlocked(page)) throw new Error('보안(봇 차단) 페이지에 막힘');
     }
 
-    // 롤링 배너 자동재생 정지 → 1번 슬라이드 고정 (접속 직후 바로)
-    try {
-      const pauseBtns = await page.$$('[class*="btn-pause"], .slick-autoplay-toggle-button');
-      for (const b of pauseBtns) { try { await b.click({ timeout: 1500 }); } catch {} }
-    } catch {}
-
-    // 상단 히어로가 나타날 초기 시간
-    await page.waitForTimeout(1500);
-    // 천천히 끝까지 스크롤(각 구역의 나타나는 요소를 트리거) 후 맨 위로
+    // 지연 로딩 콘텐츠 불러오기
     await page.evaluate(async () => {
-      await new Promise(resolve => { let t = 0; const timer = setInterval(() => { window.scrollBy(0, 400); t += 400; if (t >= document.body.scrollHeight + 800) { clearInterval(timer); resolve(); } }, 200); });
+      await new Promise(resolve => { let t = 0; const timer = setInterval(() => { window.scrollBy(0, 1000); t += 1000; if (t >= document.body.scrollHeight + 1000) { clearInterval(timer); resolve(); } }, 80); });
     });
     await page.evaluate(() => window.scrollTo(0, 0));
-    // fade-in 텍스트/지연 로딩이 다 나타날 때까지 대기 (애니메이션은 건드리지 않음)
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(2500);
 
-    // 무시영역만 숨김 (애니메이션 정지는 fade-in 텍스트를 사라지게 해서 넣지 않음)
     if (site.ignoreSelector) await page.addStyleTag({ content: `${site.ignoreSelector}{visibility:hidden !important;}` });
 
-    // 화면에 붙어다니는 고정(fixed/sticky) 요소를 일반 흐름으로 → 본문 안 가리고 제자리(주로 맨 아래)에 찍힘
+    // 하단 고정배너를 일반 흐름으로 (본문 안 가리게)
     await page.evaluate(() => {
       for (const el of document.querySelectorAll('*')) {
         const p = getComputedStyle(el).position;
-        if (p === 'fixed' || p === 'sticky') {
-          el.style.setProperty('position', 'static', 'important');
-          el.style.setProperty('transform', 'none', 'important'); // 중앙정렬 transform 제거(잘림 방지)
-        }
+        if (p === 'fixed' || p === 'sticky') { el.style.setProperty('position', 'static', 'important'); el.style.setProperty('transform', 'none', 'important'); }
       }
     });
+    await page.waitForTimeout(600);
 
-    // 백업: 혹시 슬라이드가 넘어갔으면 실제 클릭으로 1번까지 되돌림
-    try {
-      for (let i = 0; i < 12; i++) {
-        const idx = await page.evaluate(() => {
-          const sl = document.querySelector('.slick-slider'); if (!sl) return -1;
-          const list = sl.querySelector('.slick-list'); if (!list) return -1;
-          const lr = list.getBoundingClientRect();
-          const reals = [...sl.querySelectorAll('.slick-slide:not(.slick-cloned)')];
-          return reals.findIndex(s => { const r = s.getBoundingClientRect(); const cx = r.left + r.width / 2; return cx > lr.left + 5 && cx < lr.right - 5; });
-        });
-        if (idx <= 0) break;
-        const prev = await page.$('.btn-move.btn-prev, .slick-slider .btn-prev, [class*="key-visual"] [class*="prev"]');
-        if (!prev) break;
-        await prev.click({ timeout: 1500 }).catch(() => {});
-        await page.waitForTimeout(400);
-      }
-    } catch {}
-    await page.waitForTimeout(500);
+    const fullShot = () => page.screenshot({ fullPage: true });
+    // 첫 컷 = 저장용, 이후 컷 = 움직임 감지용
+    const probes = [];
+    probes.push(await fullShot());
+    for (let k = 1; k < MASK_PROBES; k++) { await page.waitForTimeout(MASK_GAP_MS); probes.push(await fullShot()); }
 
     const fp = path.join(dir, `${site.id}_full.png`);
-    await page.screenshot({ path: fp, fullPage: true });
+    fs.writeFileSync(fp, probes[0]);
     result.full = fp.replace(/\\/g, '/');
+
+    try {
+      const mp = path.join(dir, `${site.id}_motion.png`);
+      fs.writeFileSync(mp, buildMotionMask(probes));
+      result.motion = mp.replace(/\\/g, '/');
+    } catch { }
 
     if (site.checkSelector) {
       try {
