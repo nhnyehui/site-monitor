@@ -28,7 +28,6 @@ function padTo(img, w, h) {
   return out;
 }
 // 세로 밀림(전일/금일 몇 픽셀 어긋남)을 보정: 여러 오프셋 중 가장 잘 맞는 위치로 비교
-const ALIGN_OFFSETS = [-8, -6, -4, -2, 0, 2, 4, 6, 8];
 // b를 dy만큼 세로 이동한 이미지 생성(범위 밖은 a와 동일하게 채워 오차 0 처리)
 function shiftBy(aData, bImg, w, h, dy) {
   const out = Buffer.alloc(w * h * 4);
@@ -60,13 +59,13 @@ function compareImages(prevPath, todayPath, diffPath) {
   let b = PNG.sync.read(fs.readFileSync(todayPath));
   const w = Math.max(a.width, b.width), h = Math.max(a.height, b.height);
   a = padTo(a, w, h); b = padTo(b, w, h);
-  // 가장 잘 맞는 세로 오프셋 찾기 (밀림 보정)
+  // 가장 잘 맞는 세로 오프셋 찾기 (밀림 보정): 1차 넓게(±16,4칸) → 2차 미세(±3,1칸)
   let bestDy = 0, bestCount = Infinity;
-  for (const dy of ALIGN_OFFSETS) {
-    const shifted = shiftBy(a.data, b, w, h, dy);
-    const c = fastCount(a.data, shifted, w, h, 90);
-    if (c < bestCount) { bestCount = c; bestDy = dy; }
-  }
+  const tried = new Set();
+  const eval1 = (dy) => { if (tried.has(dy)) return; tried.add(dy); const s = shiftBy(a.data, b, w, h, dy); const c = fastCount(a.data, s, w, h, 90); if (c < bestCount) { bestCount = c; bestDy = dy; } };
+  for (let dy = -16; dy <= 16; dy += 4) eval1(dy);
+  const coarse = bestDy;
+  for (let dy = coarse - 3; dy <= coarse + 3; dy++) eval1(dy);
   const bAligned = shiftBy(a.data, b, w, h, bestDy);
   const diff = new PNG({ width: w, height: h });
   const n = pixelmatch(a.data, bAligned, diff.data, w, h, { threshold: PIXEL_SENSITIVITY });
