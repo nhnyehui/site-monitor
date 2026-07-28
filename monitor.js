@@ -115,14 +115,65 @@ async function captureSite(browser, site, dir) {
 
     if (site.ignoreSelector) await page.addStyleTag({ content: `${site.ignoreSelector}{visibility:hidden !important;}` });
 
-    // 하단 고정배너를 일반 흐름으로 (본문 안 가리게)
+    // 화면 하단에 붙어있는 고정 바(CTA 등)만 일반 흐름으로 → 본문 안 가리게
+    //  (숨어있는 팝업/모달까지 건드리면 빈 공간이 생기므로, 하단바만 정확히 대상으로)
     await page.evaluate(() => {
+      const vw = window.innerWidth, vh = window.innerHeight;
       for (const el of document.querySelectorAll('*')) {
-        const p = getComputedStyle(el).position;
-        if (p === 'fixed' || p === 'sticky') { el.style.setProperty('position', 'static', 'important'); el.style.setProperty('transform', 'none', 'important'); }
+        const cs = getComputedStyle(el);
+        if (cs.position !== 'fixed') continue;
+        const r = el.getBoundingClientRect();
+        const isBottomBar = r.bottom >= vh - 4 && r.bottom <= vh + 4 && r.top < vh && r.width >= vw * 0.6 && r.height > 20 && r.height < vh * 0.5 && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0;
+        if (isBottomBar) { el.style.setProperty('position', 'static', 'important'); el.style.setProperty('transform', 'none', 'important'); }
       }
     });
     await page.waitForTimeout(600);
+
+    // 지연 로딩(loading=lazy) 이미지를 강제로 즉시 로드하고 대기 (하단 공란 방지) — 리셋보다 먼저
+    await page.evaluate(async () => {
+      document.querySelectorAll('img').forEach(img => { try { img.loading = 'eager'; img.removeAttribute('loading'); } catch (e) {} });
+      await Promise.all([...document.querySelectorAll('img')].map(img => (img.complete && img.naturalWidth > 0) ? 0 : new Promise(res => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); setTimeout(res, 4000); })));
+    });
+    await page.waitForTimeout(400);
+
+    // 롤링 배너를 1번 슬라이드로 고정 + 자동재생 정지 (Swiper / Slick 모두) — 캡쳐 직전
+    await page.evaluate(async () => {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      // 1) Swiper: API로 1번(index 0) 고정
+      document.querySelectorAll('*').forEach(el => {
+        if (el.swiper && typeof el.swiper.slideTo === 'function') {
+          try { if (el.swiper.autoplay && el.swiper.autoplay.stop) el.swiper.autoplay.stop(); if (el.swiper.slideToLoop) el.swiper.slideToLoop(0, 0); else el.swiper.slideTo(0, 0); } catch (e) {}
+        }
+      });
+      // 2) Swiper 백업: data-swiper-slide-index + PREV 클릭
+      for (const root of new Set([...document.querySelectorAll('.swiper-wrapper')].map(w => w.closest('[data-event-carousel], [class*="ev-slide"], [class*="swiper"]') || w.parentElement))) {
+        try { const act = root.querySelector('.swiper-slide-active[data-swiper-slide-index]'); let idx = act ? parseInt(act.getAttribute('data-swiper-slide-index')) : 0; const prev = root.querySelector('[data-swiper="PREV"], .ev-slide-controls__arrow--prev, .swiper-button-prev, [class*="prev"]'); if (prev && isFinite(idx) && idx > 0) { for (let k = 0; k < idx && k < 12; k++) { prev.click(); await wait(300); } } } catch (e) {}
+      }
+      // 3) slick(jQuery 전역이 있으면) 백업
+      if (window.jQuery) { try { window.jQuery('.slick-slider').each(function () { window.jQuery(this).slick('slickPause'); window.jQuery(this).slick('slickGoTo', 0, true); }); } catch (e) {} }
+    });
+    await page.waitForTimeout(500);
+
+    // Slick 배너: 실제 마우스 클릭으로 1번 슬라이드까지 (합성 클릭은 무시되므로 Playwright 실제 클릭 사용)
+    if (await page.$('.slick-slider')) {
+      try {
+        // 자동재생 정지
+        const pauseBtn = await page.$('.slide-controller-wrap [class*="pause"], .section-box-keyvisual-ma-5 [class*="pause"], [class*="btn-pause"]');
+        if (pauseBtn) { await pauseBtn.click({ timeout: 2000 }).catch(() => {}); }
+        for (let i = 0; i < 12; i++) {
+          const num = await page.evaluate(() => {
+            const el = document.querySelector('.slide-controller-wrap .indicator-wrap p:nth-child(2) strong') || document.querySelector('.indicator-wrap p:nth-child(2) strong') || document.querySelector('.indicator-wrap strong');
+            if (el) { const m = (el.textContent || '').match(/\d+/); if (m) return parseInt(m[0]); }
+            return -1;
+          });
+          if (num === -1 || num <= 1) break;  // 1번 슬라이드면 완료
+          const prev = await page.$('.section-box-keyvisual-ma-5 .btn-move.btn-prev, .btn-move.btn-prev, .slick-slider .slick-prev');
+          if (!prev) break;
+          await prev.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(500);
+        }
+      } catch (e) {}
+    }
 
     const fullShot = () => page.screenshot({ fullPage: true });
     // 첫 컷 = 저장용, 이후 컷 = 움직임 감지용
