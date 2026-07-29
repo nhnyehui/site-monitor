@@ -172,6 +172,7 @@ async function captureSite(browser, site, dir) {
           await prev.click({ timeout: 2000 }).catch(() => {});
           await page.waitForTimeout(500);
         }
+        await page.waitForTimeout(1800); // 슬라이드 전환(페이드) 완전히 끝난 뒤 캡쳐
       } catch (e) {}
     }
 

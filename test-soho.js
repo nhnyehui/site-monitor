@@ -36,11 +36,11 @@ const indicatorNum = () => {
     clicks++;
     await page.waitForTimeout(500);
   }
+  await page.waitForTimeout(1800); // 전환(페이드) 정착 대기
   const after = await page.evaluate(indicatorNum);
   console.log('=== Slick 실제클릭 결과 ===');
   console.log(JSON.stringify({ pauseFound: !!pauseBtn, before, clicks, after }));
 
-  await page.waitForTimeout(700);
   await page.screenshot({ path: 'test_soho.png', fullPage: true });
   console.log('저장 → test_soho.png (배너 지시자가 1/N 이면 성공)');
   await browser.close();
