@@ -8,7 +8,7 @@ const path = require('path');
 const { Jimp } = require('jimp');
 
 const DOCS = 'docs';
-const IMG_WIDTH = 480;      // 웹 리포트용 축소 폭
+const IMG_WIDTH = 720;      // 웹 리포트 이미지 폭(클릭 시 새 탭에서 크게 보기)      // 웹 리포트용 축소 폭
 const JPEG_QUALITY = 60;
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -34,7 +34,7 @@ function badge(r) {
   if (r.status === 'first') return '<span class="b gray">첫 실행</span>';
   return r.changed ? '<span class="b red">있음</span>' : '<span class="b green">없음</span>';
 }
-function fig(label, src) { return src ? `<figure><figcaption>${label}</figcaption><img src="${src}" alt="${label}"></figure>` : ''; }
+function fig(label, src) { return src ? `<figure><figcaption>${label} <span style="color:#1a73e8;font-size:11px">(클릭해 크게)</span></figcaption><a href="${src}" target="_blank" rel="noopener"><img src="${src}" alt="${label}"></a></figure>` : ''; }
 
 (async () => {
   if (!fs.existsSync('results/latest.json')) { console.error('결과 없음 — 먼저 compare.js 실행'); process.exit(1); }
