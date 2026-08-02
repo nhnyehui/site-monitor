@@ -157,9 +157,9 @@ async function captureSite(browser, site, dir) {
     // Slick 배너: 실제 마우스 클릭으로 1번 슬라이드까지 (합성 클릭은 무시되므로 Playwright 실제 클릭 사용)
     if (await page.$('.slick-slider')) {
       try {
-        // 자동재생 정지
+        // 자동재생 정지 (보이는 버튼만)
         const pauseBtn = await page.$('.slide-controller-wrap [class*="pause"], .section-box-keyvisual-ma-5 [class*="pause"], [class*="btn-pause"]');
-        if (pauseBtn) { await pauseBtn.click({ timeout: 2000 }).catch(() => {}); }
+        if (pauseBtn && await pauseBtn.isVisible().catch(() => false)) { await pauseBtn.click({ timeout: 2000 }).catch(() => {}); }
         for (let i = 0; i < 12; i++) {
           const num = await page.evaluate(() => {
             const el = document.querySelector('.slide-controller-wrap .indicator-wrap p:nth-child(2) strong') || document.querySelector('.indicator-wrap p:nth-child(2) strong') || document.querySelector('.indicator-wrap strong');
@@ -168,7 +168,7 @@ async function captureSite(browser, site, dir) {
           });
           if (num === -1 || num <= 1) break;  // 1번 슬라이드면 완료
           const prev = await page.$('.section-box-keyvisual-ma-5 .btn-move.btn-prev, .btn-move.btn-prev, .slick-slider .slick-prev');
-          if (!prev) break;
+          if (!prev || !(await prev.isVisible().catch(() => false))) break;  // 숨겨진(무시영역) 배너는 건너뜀
           await prev.click({ timeout: 2000 }).catch(() => {});
           await page.waitForTimeout(500);
         }

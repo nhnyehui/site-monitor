@@ -57,7 +57,7 @@ function fastCount(aData, bData, w, h, tol, mask) {
   return c;
 }
 
-function compareImages(prevPath, todayPath, diffPath, maskInfo) {
+function compareImages(prevPath, todayPath, diffPath, maskInfo, mobile) {
   let a = PNG.sync.read(fs.readFileSync(prevPath));
   let b = PNG.sync.read(fs.readFileSync(todayPath));
   const w = Math.max(a.width, b.width), h = Math.max(a.height, b.height);
@@ -65,11 +65,23 @@ function compareImages(prevPath, todayPath, diffPath, maskInfo) {
   // 마스크를 (w,h)에 맞춘 평면 배열로
   let flatMask = null;
   if (maskInfo) { flatMask = { data: new Uint8Array(w * h), w, h }; for (let y = 0; y < Math.min(h, maskInfo.h); y++) for (let x = 0; x < Math.min(w, maskInfo.w); x++) if (maskInfo.data[y * maskInfo.w + x]) flatMask.data[y * w + x] = 1; }
-  // 밀림 보정: 1차 넓게(±16,4칸) → 2차 미세(±3,1칸), 움직임 제외하고 탐색
+  // 밀림 보정: (1) 행 단위 신호로 넓은 범위(±MAXOFF)의 "균일 밀림" 탐지 → (2) 픽셀 단위 미세 조정
+  //  균일하게 밀린 페이지는 정렬 후 차이 0(=무시), 일부 영역만 바뀐 페이지는 정렬해도 그 부분이 남음(=알림)
+  // 밀림 보정: PC는 오늘까지 쓰던 소폭(±19px) 그대로, 모바일만 넓은 범위(±250px)
   let bestDy = 0, bestCount = Infinity; const tried = new Set();
   const ev = (dy) => { if (tried.has(dy)) return; tried.add(dy); const s = shiftBy(a.data, b, w, h, dy); const c = fastCount(a.data, s, w, h, 90, flatMask); if (c < bestCount) { bestCount = c; bestDy = dy; } };
-  for (let dy = -16; dy <= 16; dy += 4) ev(dy);
-  const coarse = bestDy; for (let dy = coarse - 3; dy <= coarse + 3; dy++) ev(dy);
+  if (mobile) {
+    const MAXOFF = 250;
+    const rowSig = (img) => { const sig = new Float64Array(h); for (let y = 0; y < h; y++) { let acc = 0; const base = y * w * 4; for (let x = 0; x < w; x++) { const i = base + x * 4; acc += img.data[i] + img.data[i + 1] + img.data[i + 2]; } sig[y] = acc / w; } return sig; };
+    const sigA = rowSig(a), sigB = rowSig(b);
+    let coarse = 0, coarseScore = Infinity;
+    for (let dy = -MAXOFF; dy <= MAXOFF; dy++) { let sc = 0, cnt = 0; for (let y = 0; y < h; y++) { const sy = y - dy; if (sy < 0 || sy >= h) continue; sc += Math.abs(sigA[y] - sigB[sy]); cnt++; } if (cnt > h * 0.5) { sc /= cnt; if (sc < coarseScore) { coarseScore = sc; coarse = dy; } } }
+    for (let dy = coarse - 3; dy <= coarse + 3; dy++) ev(dy);
+  } else {
+    for (let dy = -16; dy <= 16; dy += 4) ev(dy);
+    const coarse = bestDy;
+    for (let dy = coarse - 3; dy <= coarse + 3; dy++) ev(dy);
+  }
   const bAligned = shiftBy(a.data, b, w, h, bestDy);
   // 움직이는 영역은 두 이미지를 같게 만들어 비교에서 제외
   let ignored = 0;
@@ -111,7 +123,7 @@ function compareImages(prevPath, todayPath, diffPath, maskInfo) {
         const diffPath = path.join(DIFF_DIR, today, `${site.id}.png`);
         // 전체 페이지 비교에만 모션마스크 적용(확인영역은 그대로)
         const mask = useRegion ? null : unionMask(loadMask(getMotion(site)), loadMask(getMotion(prevSite)));
-        r.changeRate = compareImages(useRegion ? getRegion(prevSite) : getFull(prevSite), useRegion ? getRegion(site) : getFull(site), diffPath, mask);
+        r.changeRate = compareImages(useRegion ? getRegion(prevSite) : getFull(prevSite), useRegion ? getRegion(site) : getFull(site), diffPath, mask, !!site.mobile);
         r.diff = diffPath.replace(/\\/g, '/');
         r.changed = r.changeRate > CHANGE_THRESHOLD;
       }
