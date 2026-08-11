@@ -1,5 +1,11 @@
 @echo off
 cd /d %~dp0
+rem === 주말(토/일)에는 실행하지 않음 ===
+node -e "d=new Date().getDay();process.exit(d===0||d===6?1:0)"
+if errorlevel 1 (
+  echo 주말(토/일)에는 실행하지 않습니다. 종료합니다.
+  exit /b
+)
 echo [1/6] Taking screenshots...
 node monitor.js
 echo [2/6] Comparing...

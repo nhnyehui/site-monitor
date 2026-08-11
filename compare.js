@@ -18,7 +18,14 @@ function todayKST() { return new Date().toLocaleDateString('sv-SE', { timeZone: 
 function findPrevDate(today) {
   if (!fs.existsSync(SCREENSHOT_DIR)) return null;
   const dates = fs.readdirSync(SCREENSHOT_DIR).filter(n => /^\d{4}-\d{2}-\d{2}$/.test(n) && n < today).sort();
-  return dates.length ? dates[dates.length - 1] : null;
+  // 가장 최근 날짜부터 거슬러 올라가, 실제 데이터(meta.json + 사이트)가 있는 날을 기준일로 사용
+  //  (실행이 실패해 비어있는 날짜 폴더는 건너뜀)
+  for (let i = dates.length - 1; i >= 0; i--) {
+    const mp = path.join(SCREENSHOT_DIR, dates[i], 'meta.json');
+    if (!fs.existsSync(mp)) continue;
+    try { const m = JSON.parse(fs.readFileSync(mp, 'utf8')); if (m && m.sites && m.sites.length) return dates[i]; } catch {}
+  }
+  return null;
 }
 // 예전 형식 호환
 function getFull(s) { return s ? (s.full || (s.fulls && s.fulls[0]) || null) : null; }
