@@ -92,13 +92,14 @@ async function captureSite(browser, site, dir) {
   const page = await context.newPage();
   const result = { id: site.id, name: site.name, url: site.url, importance: site.importance, mobile: site.mobile, full: null, region: null, motion: null, error: null };
   try {
-    try { await page.goto(site.url, { waitUntil: 'networkidle', timeout: 40000 }); }
-    catch { await page.goto(site.url, { waitUntil: 'load', timeout: 40000 }); }
+    // 광고/추적 요청이 계속 도는 페이지는 networkidle이 안 끝나므로 domcontentloaded 사용(빠르고 안정적)
+    try { await page.goto(site.url, { waitUntil: 'domcontentloaded', timeout: 60000 }); }
+    catch { try { await page.goto(site.url, { waitUntil: 'commit', timeout: 60000 }); } catch {} }
+    await page.waitForTimeout(2000); // 초기 렌더 대기
 
     if (site.mobile) {
-      try { await page.reload({ waitUntil: 'networkidle', timeout: 40000 }); }
-      catch { await page.reload({ waitUntil: 'load', timeout: 40000 }); }
-      await page.waitForTimeout(1200);
+      try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }); } catch {}
+      await page.waitForTimeout(1500);
     }
 
     if (await isBlocked(page)) {
