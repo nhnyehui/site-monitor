@@ -76,21 +76,6 @@ function buildMotionMask(probeBufs) {
   return PNG.sync.write(out);
 }
 
-// JS 렌더링 완료 대기: <img> 개수가 2초 연속 변하지 않으면 완료로 판단 (최대 ~18초)
-async function waitContentReady(page) {
-  try {
-    await page.evaluate(async () => {
-      let prev = -1, same = 0;
-      for (let i = 0; i < 18; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        const cur = document.querySelectorAll('img').length;
-        if (cur > 0 && cur === prev) { if (++same >= 2) break; } else same = 0;
-        prev = cur;
-      }
-    });
-  } catch {}
-}
-
 async function isBlocked(page) {
   try {
     const title = await page.title();
@@ -107,15 +92,13 @@ async function captureSite(browser, site, dir) {
   const page = await context.newPage();
   const result = { id: site.id, name: site.name, url: site.url, importance: site.importance, mobile: site.mobile, full: null, region: null, motion: null, error: null };
   try {
-    // 광고/추적 요청이 계속 도는 페이지는 networkidle이 안 끝나므로 domcontentloaded 사용
-    try { await page.goto(site.url, { waitUntil: 'domcontentloaded', timeout: 60000 }); }
-    catch { try { await page.goto(site.url, { waitUntil: 'commit', timeout: 60000 }); } catch {} }
-    // JS 렌더링이 끝날 때까지 대기: 이미지 개수가 2초 연속 그대로면 완료로 판단 (최대 ~18초)
-    await waitContentReady(page);
+    try { await page.goto(site.url, { waitUntil: 'networkidle', timeout: 40000 }); }
+    catch { await page.goto(site.url, { waitUntil: 'load', timeout: 40000 }); }
 
     if (site.mobile) {
-      try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }); } catch {}
-      await waitContentReady(page);
+      try { await page.reload({ waitUntil: 'networkidle', timeout: 40000 }); }
+      catch { await page.reload({ waitUntil: 'load', timeout: 40000 }); }
+      await page.waitForTimeout(1200);
     }
 
     if (await isBlocked(page)) {
