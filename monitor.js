@@ -1,0 +1,240 @@
+// ============================================================
+// monitor.js — 1단계: 스크린샷 + "스스로 움직이는 영역(모션마스크)" 저장
+// - 같은 날 몇 초 간격으로 여러 장을 찍어, 그 사이 변하는 픽셀 = 롤링배너 등 움직이는 영역.
+//   그 영역은 비교에서 자동 제외(셀렉터 불필요).
+// - 스텔스 없음 / 모바일(Y): 아이폰 Pixel + 새로고침 / 하단 고정배너는 맨 아래로
+// urls.csv 열: 사이트명,URL,중요도,확인영역,무시영역,다음버튼,탭버튼,모바일
+// ============================================================
+const { chromium, devices } = require('playwright');
+const fs = require('fs');
+const path = require('path');
+const { PNG } = require('pngjs');
+
+const SCREENSHOT_DIR = 'screenshots';
+// [2026-09-29 변경] 보관일수를 config.json 에서 읽는다 (기본 60일).
+//  공유폴더 저장이 막혀 있는 동안 로컬 기록까지 지워지는 것을 막기 위해 설정으로 뺐다.
+const KEEP_DAYS = require('./config.js').load().keepDays;
+const VIEWPORT = { width: 1440, height: 900 };
+const MOBILE = devices['Pixel 7'];
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+// 모션마스크 설정
+const MASK_PROBES = 3;         // 같은 날 촬영 횟수
+const MASK_GAP_MS = 2200;      // 촬영 간격 (롤링 1회전 정도 포착)
+const MASK_TOL = 40;           // 픽셀 색 차이 허용치(이보다 크면 "움직임")
+const MASK_DILATE = 3;         // 움직임 영역 약간 확장(글자 테두리까지)
+
+function todayKST() { return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); }
+
+function parseCSV(text) {
+  const rows = []; let row = [], field = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; } else field += c; }
+    else if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(field); field = ''; if (row.some(v => v.trim() !== '')) rows.push(row); row = []; }
+    else field += c;
+  }
+  row.push(field); if (row.some(v => v.trim() !== '')) rows.push(row);
+  return rows;
+}
+
+function loadSites() {
+  const rows = parseCSV(fs.readFileSync('urls.csv', 'utf-8'));
+  return rows.slice(1)
+    .filter(r => r[1] && r[1].trim().startsWith('http'))
+    .map((r, i) => ({
+      id: String(i + 1).padStart(2, '0') + '_' + (r[0] || '이름없음').trim().replace(/[^가-힣a-zA-Z0-9]/g, ''),
+      name: (r[0] || '이름없음').trim(),
+      url: r[1].trim(),
+      importance: (r[2] || '중').trim(),
+      checkSelector: (r[3] || '').trim(),
+      ignoreSelector: (r[4] || '').trim(),
+      mobile: /^y$/i.test((r[7] || '').trim()),
+    }));
+}
+
+// ─── 모션마스크 도우미 ───
+function padTo(img, w, h) { if (img.width === w && img.height === h) return img; const o = new PNG({ width: w, height: h }); PNG.bitblt(img, o, 0, 0, img.width, img.height, 0, 0); return o; }
+function dilate(m, w, h, r) {
+  const t = Buffer.alloc(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let on = 0; for (let d = -r; d <= r; d++) { const xx = x + d; if (xx >= 0 && xx < w && m[y * w + xx]) { on = 1; break; } } t[y * w + x] = on; }
+  const o = Buffer.alloc(w * h);
+  for (let x = 0; x < w; x++) for (let y = 0; y < h; y++) { let on = 0; for (let d = -r; d <= r; d++) { const yy = y + d; if (yy >= 0 && yy < h && t[yy * w + x]) { on = 1; break; } } o[y * w + x] = on; }
+  return o;
+}
+// 여러 컷에서 첫 컷과 달라지는 픽셀 = 움직임 → 흰색 마스크 PNG 버퍼
+function buildMotionMask(probeBufs) {
+  const imgs = probeBufs.map(b => PNG.sync.read(b));
+  const w = Math.max(...imgs.map(i => i.width)), h = Math.max(...imgs.map(i => i.height));
+  const P = imgs.map(i => padTo(i, w, h));
+  let m = Buffer.alloc(w * h);
+  const a = P[0];
+  for (let k = 1; k < P.length; k++) { const b = P[k]; for (let p = 0; p < w * h; p++) { const i = p * 4; if (Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]) > MASK_TOL) m[p] = 1; } }
+  m = dilate(m, w, h, MASK_DILATE);
+  const out = new PNG({ width: w, height: h });
+  for (let p = 0; p < w * h; p++) { const i = p * 4; const v = m[p] ? 255 : 0; out.data[i] = v; out.data[i + 1] = v; out.data[i + 2] = v; out.data[i + 3] = 255; }
+  return PNG.sync.write(out);
+}
+
+async function isBlocked(page) {
+  try {
+    const title = await page.title();
+    const body = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 2000) : '');
+    return /just a moment|verify you are human|security verification|performing security|checking your browser|attention required|보안 확인|사람인지 확인/i.test(title + ' ' + body);
+  } catch { return false; }
+}
+
+async function captureSite(browser, site, dir) {
+  const context = await browser.newContext(site.mobile
+    ? { ...MOBILE, locale: 'ko-KR', timezoneId: 'Asia/Seoul' }
+    : { viewport: VIEWPORT, userAgent: USER_AGENT, locale: 'ko-KR', timezoneId: 'Asia/Seoul' }
+  );
+  const page = await context.newPage();
+  const result = { id: site.id, name: site.name, url: site.url, importance: site.importance, mobile: site.mobile, full: null, region: null, motion: null, error: null };
+  try {
+    try { await page.goto(site.url, { waitUntil: 'networkidle', timeout: 40000 }); }
+    catch { await page.goto(site.url, { waitUntil: 'load', timeout: 40000 }); }
+
+    if (site.mobile) {
+      try { await page.reload({ waitUntil: 'networkidle', timeout: 40000 }); }
+      catch { await page.reload({ waitUntil: 'load', timeout: 40000 }); }
+      await page.waitForTimeout(1200);
+    }
+
+    if (await isBlocked(page)) {
+      await page.waitForTimeout(15000);
+      if (await isBlocked(page)) throw new Error('보안(봇 차단) 페이지에 막힘');
+    }
+
+    // 지연 로딩 콘텐츠 불러오기
+    await page.evaluate(async () => {
+      await new Promise(resolve => { let t = 0; const timer = setInterval(() => { window.scrollBy(0, 1000); t += 1000; if (t >= document.body.scrollHeight + 1000) { clearInterval(timer); resolve(); } }, 80); });
+    });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(2500);
+
+    if (site.ignoreSelector) await page.addStyleTag({ content: `${site.ignoreSelector}{visibility:hidden !important;}` });
+
+    // 화면 하단에 붙어있는 고정 바(CTA 등)만 일반 흐름으로 → 본문 안 가리게
+    //  (숨어있는 팝업/모달까지 건드리면 빈 공간이 생기므로, 하단바만 정확히 대상으로)
+    await page.evaluate(() => {
+      const vw = window.innerWidth, vh = window.innerHeight;
+      for (const el of document.querySelectorAll('*')) {
+        const cs = getComputedStyle(el);
+        if (cs.position !== 'fixed') continue;
+        const r = el.getBoundingClientRect();
+        const isBottomBar = r.bottom >= vh - 4 && r.bottom <= vh + 4 && r.top < vh && r.width >= vw * 0.6 && r.height > 20 && r.height < vh * 0.5 && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0;
+        if (isBottomBar) { el.style.setProperty('position', 'static', 'important'); el.style.setProperty('transform', 'none', 'important'); }
+      }
+    });
+    await page.waitForTimeout(600);
+
+    // 지연 로딩(loading=lazy) 이미지를 강제로 즉시 로드하고 대기 (하단 공란 방지) — 리셋보다 먼저
+    await page.evaluate(async () => {
+      document.querySelectorAll('img').forEach(img => { try { img.loading = 'eager'; img.removeAttribute('loading'); } catch (e) {} });
+      await Promise.all([...document.querySelectorAll('img')].map(img => (img.complete && img.naturalWidth > 0) ? 0 : new Promise(res => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); setTimeout(res, 4000); })));
+    });
+    await page.waitForTimeout(400);
+
+    // 롤링 배너를 1번 슬라이드로 고정 + 자동재생 정지 (Swiper / Slick 모두) — 캡쳐 직전
+    await page.evaluate(async () => {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      // 1) Swiper: API로 1번(index 0) 고정
+      document.querySelectorAll('*').forEach(el => {
+        if (el.swiper && typeof el.swiper.slideTo === 'function') {
+          try { if (el.swiper.autoplay && el.swiper.autoplay.stop) el.swiper.autoplay.stop(); if (el.swiper.slideToLoop) el.swiper.slideToLoop(0, 0); else el.swiper.slideTo(0, 0); } catch (e) {}
+        }
+      });
+      // 2) Swiper 백업: data-swiper-slide-index + PREV 클릭
+      for (const root of new Set([...document.querySelectorAll('.swiper-wrapper')].map(w => w.closest('[data-event-carousel], [class*="ev-slide"], [class*="swiper"]') || w.parentElement))) {
+        try { const act = root.querySelector('.swiper-slide-active[data-swiper-slide-index]'); let idx = act ? parseInt(act.getAttribute('data-swiper-slide-index')) : 0; const prev = root.querySelector('[data-swiper="PREV"], .ev-slide-controls__arrow--prev, .swiper-button-prev, [class*="prev"]'); if (prev && isFinite(idx) && idx > 0) { for (let k = 0; k < idx && k < 12; k++) { prev.click(); await wait(300); } } } catch (e) {}
+      }
+      // 3) slick(jQuery 전역이 있으면) 백업
+      if (window.jQuery) { try { window.jQuery('.slick-slider').each(function () { window.jQuery(this).slick('slickPause'); window.jQuery(this).slick('slickGoTo', 0, true); }); } catch (e) {} }
+    });
+    await page.waitForTimeout(500);
+
+    // Slick 배너: 실제 마우스 클릭으로 1번 슬라이드까지 (합성 클릭은 무시되므로 Playwright 실제 클릭 사용)
+    if (await page.$('.slick-slider')) {
+      try {
+        // 자동재생 정지 (보이는 버튼만)
+        const pauseBtn = await page.$('.slide-controller-wrap [class*="pause"], .section-box-keyvisual-ma-5 [class*="pause"], [class*="btn-pause"]');
+        if (pauseBtn && await pauseBtn.isVisible().catch(() => false)) { await pauseBtn.click({ timeout: 2000 }).catch(() => {}); }
+        for (let i = 0; i < 12; i++) {
+          const num = await page.evaluate(() => {
+            const el = document.querySelector('.slide-controller-wrap .indicator-wrap p:nth-child(2) strong') || document.querySelector('.indicator-wrap p:nth-child(2) strong') || document.querySelector('.indicator-wrap strong');
+            if (el) { const m = (el.textContent || '').match(/\d+/); if (m) return parseInt(m[0]); }
+            return -1;
+          });
+          if (num === -1 || num <= 1) break;  // 1번 슬라이드면 완료
+          const prev = await page.$('.section-box-keyvisual-ma-5 .btn-move.btn-prev, .btn-move.btn-prev, .slick-slider .slick-prev');
+          if (!prev || !(await prev.isVisible().catch(() => false))) break;  // 숨겨진(무시영역) 배너는 건너뜀
+          await prev.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(500);
+        }
+        await page.waitForTimeout(1800); // 슬라이드 전환(페이드) 완전히 끝난 뒤 캡쳐
+      } catch (e) {}
+    }
+
+    const fullShot = () => page.screenshot({ fullPage: true });
+    // 첫 컷 = 저장용, 이후 컷 = 움직임 감지용
+    const probes = [];
+    probes.push(await fullShot());
+    for (let k = 1; k < MASK_PROBES; k++) { await page.waitForTimeout(MASK_GAP_MS); probes.push(await fullShot()); }
+
+    const fp = path.join(dir, `${site.id}_full.png`);
+    fs.writeFileSync(fp, probes[0]);
+    result.full = fp.replace(/\\/g, '/');
+
+    try {
+      const mp = path.join(dir, `${site.id}_motion.png`);
+      fs.writeFileSync(mp, buildMotionMask(probes));
+      result.motion = mp.replace(/\\/g, '/');
+    } catch { }
+
+    if (site.checkSelector) {
+      try {
+        const el = page.locator(site.checkSelector).first();
+        await el.waitFor({ state: 'visible', timeout: 8000 });
+        const rp = path.join(dir, `${site.id}_region.png`);
+        await el.screenshot({ path: rp });
+        result.region = rp.replace(/\\/g, '/');
+      } catch { }
+    }
+    console.log(`  O [${site.name}]${site.mobile ? ' [모바일]' : ''} 저장`);
+  } catch (e) {
+    result.error = String(e.message || e).split('\n')[0];
+    console.log(`  X [${site.name}] 실패: ${result.error}`);
+  } finally {
+    await page.close();
+    await context.close();
+  }
+  return result;
+}
+
+function cleanupOldFolders() {
+  const cutoff = new Date(Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000).toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
+  for (const base of [SCREENSHOT_DIR, 'diffs']) {
+    if (!fs.existsSync(base)) continue;
+    for (const name of fs.readdirSync(base)) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(name) && name < cutoff) { fs.rmSync(path.join(base, name), { recursive: true, force: true }); console.log(`오래된 폴더 삭제: ${base}/${name}`); }
+    }
+  }
+}
+
+(async () => {
+  const date = todayKST();
+  const dir = path.join(SCREENSHOT_DIR, date);
+  fs.mkdirSync(dir, { recursive: true });
+  const sites = loadSites();
+  console.log(`${date} — ${sites.length}개 사이트 점검 시작`);
+  const browser = await chromium.launch({ args: ['--no-sandbox', '--lang=ko-KR'] });
+  const results = [];
+  for (const site of sites) results.push(await captureSite(browser, site, dir));
+  await browser.close();
+  fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ date, sites: results }, null, 2));
+  cleanupOldFolders();
+  console.log(`스크린샷 저장 완료 → ${dir}`);
+})();

@@ -1,0 +1,12 @@
+node_modules/
+screenshots/
+diffs/
+results/
+reports/
+uploads/
+*.png
+webhook.txt
+share.txt
+link.txt
+weblink.txt
+baseline-once.txt
