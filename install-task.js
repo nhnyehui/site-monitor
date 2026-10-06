@@ -9,7 +9,10 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const TASK_NAME = 'site-monitor-daily';   // 영문 이름 — 한글 이름은 인코딩 문제를 일으킬 수 있다
-const RUN_AT = '09:00:00';
+
+// 실행 시각은 config.json 의 "실행시각" 에서 읽는다 (없으면 09:00)
+let RUN_AT = '09:00:00';
+try { RUN_AT = require('./config.js').load().runAt + ':00'; } catch { /* 설정을 못 읽으면 기본값 */ }
 
 const dir = process.cwd();
 const runBat = path.join(dir, 'run.bat');
@@ -68,7 +71,7 @@ fs.writeFileSync(xmlPath, '﻿' + xml, 'utf16le');
 try {
   execFileSync('schtasks', ['/Create', '/TN', TASK_NAME, '/XML', xmlPath, '/F'],
                { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  console.log('  자동 실행 등록 완료 — 작업 이름 "' + TASK_NAME + '", 매일 09:00');
+  console.log('  자동 실행 등록 완료 — 작업 이름 "' + TASK_NAME + '", 매일 ' + RUN_AT.slice(0, 5));
   console.log('  ("예약된 시작을 놓친 경우 즉시 실행" 옵션이 켜져 있어, 9시에 PC가 꺼져 있었어도');
   console.log('   켜는 순간 그날 분이 실행됩니다)');
 } catch (e) {

@@ -70,6 +70,7 @@ if (CFG) {
        '구글 드라이브면 로그인 상태와 G: 드라이브를, 사내 공유폴더면 네트워크 연결을 확인하세요.');
   else ok('공유폴더 접근 가능: ' + CFG.sharePath);
 
+  info('실행 시각: 매일 ' + CFG.runAt + ' (바꾸려면 config.json 수정 후 설치.bat 재실행)');
   info('보관일수: ' + CFG.keepDays + '일 (이보다 오래된 캡쳐는 자동 삭제)');
   info('웹 게시(GitHub): ' + (CFG.useWebPublish ? '사용함' : '사용 안 함'));
   info('변경 없어도 매일 알림: ' + (CFG.sendWhenNoChange ? '보냄' : '안 보냄'));

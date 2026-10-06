@@ -45,6 +45,8 @@ function load() {
     webLink:   pick('웹리포트링크',   'weblink.txt'),
     // 아래 두 개는 예전 txt 방식에 없던 항목이라 기본값을 둔다.
     enabled:          c['사용']         !== false,    // 기본 true (false 면 전체 중지)
+    // 매일 자동 실행할 시각 (HH:MM). 바꾼 뒤에는 설치.bat 을 다시 눌러야 반영된다.
+    runAt:            /^([01]\d|2[0-3]):[0-5]\d$/.test(String(c['실행시각'] || '')) ? String(c['실행시각']) : '09:00',
     // 캡쳐·비교이미지를 며칠치 보관할지. 공유폴더 저장이 막혀 있는 동안 로컬 기록이
     // 사라지지 않도록 기본을 넉넉히 60일로 둔다. config.json 에 값이 있으면 그 값을 쓴다.
     keepDays:         (typeof c['보관일수'] === 'number' && c['보관일수'] > 0) ? Math.floor(c['보관일수']) : 60,
